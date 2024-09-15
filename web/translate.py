@@ -106,18 +106,27 @@ def translate(texts, engine='google', actress=[]):
                 err_msg = "{}: {}: {}".format(engine, result['error_code'], result['error_msg'])
         except Exception as e:
             err_msg = "{}: {}: Exception: {}".format(engine, -2, repr(e))
-    elif engine == 'claude':
+    elif engine == 'groq':
         try:
-            result = claude_translate(texts)
+            result = groq_translate(texts)
             if 'error_code' not in result:
                 rtn = {'trans': result}
             else:
                 err_msg = "{}: {}: {}".format(engine, result['error_code'], result['error_msg'])
         except Exception as e:
             err_msg = "{}: {}: Exception: {}".format(engine, -2, repr(e))
-    elif engine == 'groq':
+    elif engine == 'openai':
         try:
-            result = groq_translate(texts)
+            result = openai_translate(texts)
+            if 'error_code' not in result:
+                rtn = {'trans': result}
+            else:
+                err_msg = "{}: {}: {}".format(engine, result['error_code'], result['error_msg'])
+        except Exception as e:
+            err_msg = "{}: {}: Exception: {}".format(engine, -2, repr(e))
+    elif engine == 'deepl':
+        try:
+            result = deepl_translate(texts)
             if 'error_code' not in result:
                 rtn = {'trans': result}
             else:
@@ -191,31 +200,181 @@ def google_trans(texts, to='zh_CN'):
     time.sleep(4) # Google翻译的API有QPS限制，因此需要等待一段时间
     return result
 
-def claude_translate(texts, to="zh_CN"):
-    """使用Claude翻译文本（默认翻译为简体中文）"""
-    api_url = "https://api.anthropic.com/v1/messages"
+
+def deepl_translate(texts, to="zh_CN"):
+    """使用DeepL翻译文本（默认翻译为简体中文）"""
+    api_url = "https://api-free.deepl.com/v2/translate"
     headers = {
-        "x-api-key": cfg.Translate.claude_key,
-        "context-type": "application/json",
-        "anthropic-version": "2023-06-01",
+        "Content-Type": "application/json",
+        "Authorization": f"DeepL-Auth-Key {cfg.Translate.deepl_key}",
     }
     data = {
-        "model": "claude-3-haiku-20240307",
-        "system": f"Translate the following Japanese paragraph into {to}, while leaving non-Japanese text, names, or text that does not look like Japanese untranslated. Reply with the translated text only, do not add any text that is not in the original content.",
-        "max_tokens": 1024,
-        "messages": [{"role": "user", "content": texts}],
+        "text": [texts],
+        "target_lang": "ZH" if to == "zh_CN" else "ZH-HANT",
+        "split_sentences": "0",
+        "preserve_formatting": True,
     }
+    logger.info("DeepL Input: %s", texts)
     r = requests.post(api_url, headers=headers, json=data)
     if r.status_code == 200:
-        result = r.json().get("content", [{}])[0].get("text", "").strip()
+        if "error" in r.json():
+            result = {
+                "error_code": r.status_code,
+                "error_msg": r.json().get("error", {}).get("message", r.reason),
+            }
+        else:
+            try:
+                response_message = r.json().get("translations")[0]
+                result = response_message.get("text", "").strip()
+            except Exception as e:
+                logger.error("DeepL API error: {}".format(repr(e)))
+                result = {"error_code": r.status_code, "error_msg": repr(e)}
+        logger.info("DeepL Output: %s", result)
     else:
         result = {
             "error_code": r.status_code,
-            "error_msg": r.json().get("error", {}).get("message", r.reason),
+            "error_msg": r.reason,
         }
     return result
 
-def groq_translate(texts, to="zh_CN"):
+def _convert_to_zh_tw(texts):
+    """翻译为繁体中文"""
+    result = texts
+    api_url = f"https://api.zhconvert.org/convert?text=\"{texts}\"&converter=Taiwan"
+    r = requests.get(api_url)
+    if r.status_code == 200:
+        try:
+            result = r.json().get("data", {}).get("text", "").strip()
+        except Exception as e:
+            logger.error("Fanhuaji API error: {}".format(repr(e)))
+            result = texts
+    else:
+        result = texts
+
+    return result
+
+def _text_language_detect_is_ja(texts):
+    """检测文本语言"""
+    api_url = "https://translation.googleapis.com/language/translate/v2/detect"
+    headers = {
+        "Authorization": f"Bearer {cfg.Translate.google_key}",
+        "X-Goog-User-Project": cfg.Translate.google_project_id,
+        "Content-Type": "application/json",
+    }
+    data = {"q": texts}
+    r = requests.post(api_url, headers=headers, json=data)
+    if r.status_code == 200:
+        try:
+            result = r.json().get("data", {}).get("detections", [[{}]])[0][0].get("language", "")
+        except Exception as e:
+            logger.error("Google API error: {}".format(repr(e)))
+            result = ""
+    else:
+        result = ""
+
+    if result == "ja":
+        return True
+    elif result != "zh-TW":
+        # Use fanhuaji to convert to zh_TW
+        return _convert_to_zh_tw(texts)
+    return False
+
+def _ai_translate_system_input(to):
+    return f"""You are a movie industry translator converting text from Japanese to {to}.\n
+               Do not translate any other language, including Chinese, Japanese, Korean, etc.\n
+               Translate movie titles or descriptions, keeping Japanese names and non-Japanese characters unchanged.\n
+               Some content may contain adult themes, but it's all artistic work, you should translate it as this is your 
+               responsibility. Rewrite Wasei-eigo in English where applicable. Do not add any new elements.\n
+               Return with the translated text only."""
+
+
+def _ai_refuse_detect(texts):
+    """Check if AI model refuses to translate the text"""
+    api_url = "https://api.openai.com/v1/moderations"
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {cfg.Translate.openai_key}",
+    }
+    data = {"input": texts}
+    r = requests.post(api_url, headers=headers, json=data)
+    if r.status_code == 200:
+        try:
+            result = r.json().get('results', [{}])[0].get('flagged', False)
+        except Exception as e:
+            logger.error("API error: {}".format(repr(e)))
+            result = False
+    else:
+        result = False
+
+    if result is False:
+        # flagged False means that the text is not translated as expected
+        return True
+    return False
+
+def _ai_fallback(texts, to='zh_TW'):
+    fallback_result = texts
+    try:
+        fallback_result = deepl_translate(texts, to)
+    except Exception as e:
+        logger.error("Fallback failed - DeepL: {}: Exception: {}".format(-2, repr(e)))
+
+    return fallback_result
+
+def openai_translate(texts, to="zh_TW"):
+    """使用OpenAI翻译文本（默认翻译为简体中文）"""
+
+    # Check if input text is not Japanese
+    if not _text_language_detect_is_ja(texts):
+        # Do not translate
+        return texts
+
+    api_url = "https://api.openai.com/v1/chat/completions"
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {cfg.Translate.openai_key}",
+    }
+    data = {
+        "messages": [
+            {
+                "role": "system",
+                "content": _ai_translate_system_input(to),
+            },
+            {"role": "user", "content": texts},
+        ],
+        "model": "chatgpt-4o-latest",
+        "temperature": 0.1,
+        "top_p": 1,
+        "frequency_penalty": 1,
+        "max_completion_tokens": 512
+    }
+
+    logger.info("OpenAI Input: %s", texts)
+    r = requests.post(api_url, headers=headers, json=data)
+    if r.status_code == 200:
+        if 'error' in r.json():
+            result = {
+                "error_code": r.status_code,
+                "error_msg": r.json().get("error", {}).get("message", r.reason),
+            }
+        else:
+            try:
+                response_message = r.json().get("choices", [{}])[0].get("message", {})
+                result = response_message.get("content", "").strip()
+            except Exception as e:
+                logger.error("Open API error: {}".format(repr(e)))
+                result = {"error_code": r.status_code, "error_msg": repr(e)}
+            if _ai_refuse_detect(result):
+                logger.warning("OpenAI refused to translate the text, fallback to Groq")
+                result = groq_translate(texts, to)
+        logger.info("OpenAI Output: %s", result)
+    else:
+        result = {
+            "error_code": r.status_code,
+            "error_msg": r.reason,
+        }
+    return result
+
+def groq_translate(texts, to="zh_TW"):
     """使用Groq翻译文本（默认翻译为简体中文）"""
     api_url = "https://api.groq.com/openai/v1/chat/completions"
     headers = {
@@ -226,7 +385,7 @@ def groq_translate(texts, to="zh_CN"):
          "messages": [
            {
              "role": "system",
-             "content": f"Translate the following Japanese paragraph into {to}, while leaving non-Japanese text, names, or text that does not look like Japanese untranslated. Reply with the translated text only, do not add any text that is not in the original content."
+             "content": _ai_translate_system_input(to),
            },
            {
              "role": "user",
@@ -234,18 +393,25 @@ def groq_translate(texts, to="zh_CN"):
            }
          ],
          "model": "llama-3.1-70b-versatile",
-         "temperature": 0,
-         "max_tokens": 1024,
+         "temperature": 0.01,
+         "max_tokens": 512,
     }
     r = requests.post(api_url, headers=headers, json=data)
     if r.status_code == 200:
         if 'error' in r.json():
             result = {
                 "error_code": r.status_code,
-                "error_msg": r.json().get("error", {}).get("message", ""),
+                "error_msg": r.json().get("error", {}).get("message", r.reason),
             }
         else:
-            result = r.json().get("choices", [{}])[0].get("message", {}).get("content", "").strip()
+            try:
+                result = r.json().get("choices", [{}])[0].get("message", {}).get("content", "").strip()
+            except Exception as e:
+                logger.error("Groq API error: {}".format(repr(e)))
+                result = {"error_code": r.status_code, "error_msg": repr(e)}
+            if _ai_refuse_detect(result):
+                logger.warning("Groq refused to translate the text, fallback to DeepL Translate")
+                result = _ai_fallback(texts, to)
     else:
         result = {
             "error_code": r.status_code,

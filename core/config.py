@@ -213,6 +213,7 @@ class Config(configparser.ConfigParser):
         check_proxy_free_url(self)
         validate_media_servers(self)
         validate_ai_config(self)
+        convert_nfo_config(self)
 
 
 def is_url(url: str):
@@ -266,6 +267,8 @@ def norm_boolean(cfg: Config):
             ('Picture', 'use_ai_crop'),
             ('Picture', 'add_label_to_cover'),
             ('NFO', 'add_genre_to_tag'),
+            ('NFO', 'add_custom_tags'),
+            ('NFO', 'add_custom_genres'),
             ('Other', 'check_update'),
             ('Other', 'auto_update'),
             ('File', 'enable_file_move'),
@@ -310,8 +313,10 @@ def validate_translation(cfg: Config):
     trans.baidu_appid = os.getenv('JAVSP_BAIDU_APPID', trans.baidu_appid)
     trans.baidu_key = os.getenv('JAVSP_BAIDU_KEY', trans.baidu_key)
     trans.bing_key = os.getenv('JAVSP_BING_KEY', trans.bing_key)
-    trans.claude_key = os.getenv('JAVSP_CLAUDE_KEY', trans.claude_key)
     trans.groq_key = os.getenv('JAVSP_GROQ_KEY', trans.groq_key)
+    trans.openai_key = os.getenv('JAVSP_OPENAI_KEY', trans.openai_key)
+    trans.deepl_key = os.getenv('JAVSP_DEEPL_KEY', trans.deepl_key)
+    trans.google_key = os.getenv('JAVSP_GOOGLE_KEY', trans.google_key)
     # 先获取访问凭据再判断翻译引擎，这样的话即使配置文件中未启用翻译也可以调试翻译功能
     if trans.engine == '':
         return
@@ -330,16 +335,21 @@ def validate_translation(cfg: Config):
             logger.error('启用必应翻译时，key不能留空')
     elif engine_name == 'google':
         cfg.Translate.engine = engine_name
-    elif engine_name == 'claude':
-        if trans.claude_key:
-            cfg.Translate.engine = engine_name
-        else:
-            logger.error('启用Claude时，key不能留空')
     elif engine_name == 'groq':
         if trans.groq_key:
             cfg.Translate.engine = engine_name
         else:
             logger.error('启用Groq时，key不能留空')
+    elif engine_name == 'openai':
+        if trans.openai_key:
+            cfg.Translate.engine = engine_name
+        else:
+            logger.error('启用OpenAI时，key不能留空')
+    elif engine_name == 'deepl':
+        if trans.deepl_key:
+            cfg.Translate.engine = engine_name
+        else:
+            logger.error('启用DeepL时，key不能留空')
     else:
         logger.error('无效的翻译引擎: ' + engine_name)
 
@@ -394,6 +404,11 @@ def check_proxy_free_url(cfg: Config):
         if not url.startswith('http'):
             url = 'http://' + url
         sec[site] = url if is_url(url) else ''
+
+def convert_nfo_config(cfg: Config):
+    """NFO: 转换为字符串Template"""
+    cfg.NFO.add_custom_tags_rule = Template(cfg.NFO.add_custom_tags_rule)
+    cfg.NFO.add_custom_genres_rule = Template(cfg.NFO.add_custom_genres_rule)
 
 
 def parse_args():
