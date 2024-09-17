@@ -256,8 +256,14 @@ def _convert_to_zh_tw(texts):
 def _text_language_detect_is_ja(texts):
     """检测文本语言"""
     api_url = "https://translation.googleapis.com/language/translate/v2/detect"
+    gcloud_key = os.environ.get("GCLOUD_KEY", "")
+
+    if not gcloud_key:
+        logger.error("Failed to get gcloud key!")
+        return False
+
     headers = {
-        "Authorization": f"Bearer {cfg.Translate.google_key}",
+        "Authorization": f"Bearer {gcloud_key}",
         "X-Goog-User-Project": cfg.Translate.google_project_id,
         "Content-Type": "application/json",
     }
@@ -271,6 +277,11 @@ def _text_language_detect_is_ja(texts):
             result = ""
     else:
         result = ""
+
+    if not result:
+        logger.error("Google API error: {}".format(r.text))
+    else:
+        logger.info("Text locale: {}".format(result))
 
     if result == "ja":
         return True
