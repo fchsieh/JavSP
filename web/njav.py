@@ -34,9 +34,9 @@ def search_video(movie: MovieInfo):
             if "FC2" in search_title and fc2id in search_title:
                 video_url = item.xpath("@href")
                 break
-
+    
     return get_list_first(video_url)
-
+    
 def parse_data(movie: MovieInfo):
     """解析指定番号的影片数据"""
     # 抓取网页
@@ -49,7 +49,7 @@ def parse_data(movie: MovieInfo):
         container = container[0]
     else:
         raise MovieNotFoundError(__name__, movie.dvdid)
-
+    
     title = container.xpath("//div[@class='d-flex justify-content-between align-items-start']/div/h1/text()")[0]
     thumb_pic = container.xpath("//div[@id='player']/@data-poster")
     plot = " ".join(container.xpath("//div[@class='description']/p/text()"))
@@ -87,7 +87,7 @@ def parse_data(movie: MovieInfo):
             publish_date = get_list_first(item.xpath("span")[1].xpath("text()"))
         elif "再生時間:" in item_title:
             duration_str = get_list_first(item.xpath("span")[1].xpath("text()"))
-
+    
     # 清除标题里的番号字符
     keywords = [real_id, " "]
     if movie.dvdid.startswith("FC2"):

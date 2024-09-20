@@ -32,7 +32,7 @@ def parse_data(movie: MovieInfo):
         container = container[0]
     else:
         raise MovieNotFoundError(__name__, movie.dvdid)
-
+    
     title = container.xpath("//h2/a/text()")
     thumb_pic = container.xpath(f"//img[@alt='{fc2_id}']/@src")
     duration_str = container.xpath("//div[starts-with(text(),'収録時間：')]/span/text()")

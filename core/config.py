@@ -410,7 +410,6 @@ def convert_nfo_config(cfg: Config):
     cfg.NFO.add_custom_tags_rule = Template(cfg.NFO.add_custom_tags_rule)
     cfg.NFO.add_custom_genres_rule = Template(cfg.NFO.add_custom_genres_rule)
 
-
 def parse_args():
     """解析从命令行传入的参数并进行有效性验证"""
     parser = argparse.ArgumentParser(prog='JavSP', description='汇总多站点数据的AV元数据刮削器',
