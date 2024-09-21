@@ -237,6 +237,9 @@ def norm_int(cfg: Config):
     cfg.NamingRule.max_actress_count = max(cfg.getint('NamingRule', 'max_actress_count'), 1)
     cfg.File.ignore_video_file_less_than = int(cfg.getfloat('File', 'ignore_video_file_less_than') * 2**20)
     cfg.Crawler.sleep_after_scraping = max(cfg.getint('Crawler', 'sleep_after_scraping'), 0)
+    cfg.Translate.ai_temperature = max(cfg.getfloat('Translate', 'ai_temperature'), 0.05)
+    cfg.Translate.ai_top_p = max(cfg.getfloat('Translate', 'ai_top_p'), 1.0)
+    cfg.Translate.ai_max_tokens = max(cfg.getint('Translate', 'ai_max_tokens'), 512)
 
 
 def norm_tuples(cfg: Config):
@@ -272,6 +275,7 @@ def norm_boolean(cfg: Config):
             ('Other', 'check_update'),
             ('Other', 'auto_update'),
             ('File', 'enable_file_move'),
+            ('Translate', 'ai_fallback'),
         ]:
         cfg._sections[sec][key] = cfg.getboolean(sec, key)
     # 特殊转换

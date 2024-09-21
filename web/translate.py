@@ -214,7 +214,6 @@ def deepl_translate(texts, to="zh_CN"):
         "split_sentences": "0",
         "preserve_formatting": True,
     }
-    logger.info("DeepL Input: %s", texts)
     r = requests.post(api_url, headers=headers, json=data)
     if r.status_code == 200:
         if "error" in r.json():
@@ -229,7 +228,6 @@ def deepl_translate(texts, to="zh_CN"):
             except Exception as e:
                 logger.error("DeepL API error: {}".format(repr(e)))
                 result = {"error_code": r.status_code, "error_msg": repr(e)}
-        logger.info("DeepL Output: %s", result)
     else:
         result = {
             "error_code": r.status_code,
@@ -280,8 +278,6 @@ def _text_language_detect_is_ja(texts):
 
     if not result:
         logger.error("Google API error: {}".format(r.text))
-    else:
-        logger.info("Text locale: {}".format(result))
 
     if result == "ja":
         return True
@@ -299,8 +295,13 @@ def _ai_translate_system_input(to):
                Return with the translated text only."""
 
 
-def _ai_refuse_detect(texts):
+def _ai_refusal_detected(texts):
     """Check if AI model refuses to translate the text"""
+
+    # Return if fallback is not enabled
+    if not cfg.Translate.ai_fallback:
+        return False
+
     api_url = "https://api.openai.com/v1/moderations"
     headers = {
         "Content-Type": "application/json",
@@ -317,6 +318,14 @@ def _ai_refuse_detect(texts):
     else:
         result = False
 
+    if result is False and r.status_code != 200:
+        trans_text = google_trans(texts, to="en")
+        if "sentences" in trans_text:
+            trans_break = [i["trans"] for i in trans_text["sentences"]]
+            google_res = "".join(trans_break).lower().strip()
+            if "translate" in google_res or "translation" in google_res:
+                return True
+
     if result is False:
         # flagged False means that the text is not translated as expected
         return True
@@ -332,31 +341,28 @@ def _ai_fallback(texts, to='zh_TW'):
     return fallback_result
 
 def openai_translate(texts, to="zh_TW"):
-    """使用OpenAI翻译文本（默认翻译为简体中文）"""
+    """使用OpenAI翻译文本（默认翻译为简体中文），可使用OpenAI兼容API"""
 
     # Check if input text is not Japanese
     if not _text_language_detect_is_ja(texts):
         # Do not translate
         return texts
 
-    api_url = "https://api.openai.com/v1/chat/completions"
+    api_url = cfg.Translate.openai_custom_api or "https://api.openai.com/v1/chat/completions"
     headers = {
         "Content-Type": "application/json",
-        "Authorization": f"Bearer {cfg.Translate.openai_key}",
+        "Authorization": f"Bearer {cfg.Translate.openai_custom_api_key if cfg.Translate.openai_custom_api else cfg.Translate.openai_key}",
     }
     data = {
         "messages": [
-            {
-                "role": "system",
-                "content": _ai_translate_system_input(to),
-            },
+            {"role": "system", "content": _ai_translate_system_input(to)},
             {"role": "user", "content": texts},
         ],
-        "model": "chatgpt-4o-latest",
-        "temperature": 0.1,
-        "top_p": 1,
+        "model": cfg.Translate.openai_model or "chatgpt-4o-latest",
+        "temperature": cfg.Translate.ai_temperature,
+        "top_p": cfg.Translate.ai_top_p,
         "frequency_penalty": 1,
-        "max_completion_tokens": 512
+        "max_completion_tokens": cfg.Translate.ai_max_tokens,
     }
 
     logger.info("OpenAI Input: %s", texts)
@@ -374,7 +380,7 @@ def openai_translate(texts, to="zh_TW"):
             except Exception as e:
                 logger.error("Open API error: {}".format(repr(e)))
                 result = {"error_code": r.status_code, "error_msg": repr(e)}
-            if _ai_refuse_detect(result):
+            if _ai_refusal_detected(result):
                 logger.warning("OpenAI refused to translate the text, fallback to Groq")
                 result = groq_translate(texts, to)
         logger.info("OpenAI Output: %s", result)
@@ -404,8 +410,8 @@ def groq_translate(texts, to="zh_TW"):
            }
          ],
          "model": "llama-3.1-70b-versatile",
-         "temperature": 0.01,
-         "max_tokens": 512,
+         "temperature": cfg.Translate.ai_temperature,
+         "max_tokens": cfg.Translate.ai_max_tokens,
     }
     r = requests.post(api_url, headers=headers, json=data)
     if r.status_code == 200:
@@ -420,7 +426,7 @@ def groq_translate(texts, to="zh_TW"):
             except Exception as e:
                 logger.error("Groq API error: {}".format(repr(e)))
                 result = {"error_code": r.status_code, "error_msg": repr(e)}
-            if _ai_refuse_detect(result):
+            if _ai_refusal_detected(result):
                 logger.warning("Groq refused to translate the text, fallback to DeepL Translate")
                 result = _ai_fallback(texts, to)
     else:
