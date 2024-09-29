@@ -430,7 +430,9 @@ def RunNormalMode(all_movies):
             inner_bar.set_description(f'启动并发任务')
             all_info = parallel_crawler(movie, inner_bar)
             msg = f'为其配置的{len(Cfg().crawler.selection[movie.data_src])}个抓取器均未获取到影片信息'
-            check_step(all_info, msg)
+            if not all_info:
+                logger.error(msg)
+                continue
 
             inner_bar.set_description('汇总数据')
             has_required_keys = info_summary(movie, all_info)
