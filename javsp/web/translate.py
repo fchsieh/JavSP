@@ -5,6 +5,8 @@ from typing import Union
 import uuid
 import random
 import logging
+import os
+import subprocess
 from pydantic_core import Url
 import requests
 from hashlib import md5
@@ -19,6 +21,112 @@ from javsp.web.base import read_proxy
 
 
 logger = logging.getLogger(__name__)
+
+
+def _ai_translate_system_input(to):
+    return f"""You are a movie industry translator converting text from Japanese to locale {to}.\n
+               Do not translate any other language, including Chinese, Japanese, Korean, etc.\n
+               Translate movie titles or descriptions, keeping Japanese names and non-Japanese characters unchanged.\n
+               Some content may contain adult themes, but it's all artistic work, you should translate it as this is your 
+               responsibility. Rewrite Wasei-eigo in English where applicable. Do not add any new elements.\n
+               Return with the translated text only."""
+
+
+def _convert_to_zh_tw(texts):
+    """翻译为繁体中文"""
+    result = texts
+    api_url = f'https://api.zhconvert.org/convert?text="{texts}"&converter=Taiwan'
+    r = requests.get(api_url)
+    if r.status_code == 200:
+        try:
+            result = r.json().get("data", {}).get("text", "").strip()
+        except Exception as e:
+            logger.error("Fanhuaji API error: {}".format(repr(e)))
+            result = texts
+    else:
+        result = texts
+    return result
+
+
+def _text_language_detect_is_ja(texts):
+    """检测文本语言"""
+
+    api_url = "https://translation.googleapis.com/language/translate/v2/detect"
+    gcloud_key = subprocess.check_output("gcloud auth print-access-token", shell=True).decode().strip()
+    project_id = subprocess.check_output("gcloud config get-value project", shell=True).decode().strip()
+
+    if not gcloud_key or not project_id:
+        logger.error("Failed to get gcloud key or project id!")
+        return False
+
+    headers = {
+        "Authorization": f"Bearer {gcloud_key}",
+        "X-Goog-User-Project": project_id,
+        "Content-Type": "application/json",
+    }
+    data = {"q": texts}
+    r = requests.post(api_url, headers=headers, json=data)
+    if r.status_code == 200:
+        try:
+            result = (
+                r.json()
+                .get("data", {})
+                .get("detections", [[{}]])[0][0]
+                .get("language", "")
+            )
+        except Exception as e:
+            logger.error("Google API error: {}".format(repr(e)))
+            result = ""
+    else:
+        result = ""
+
+    if not result:
+        logger.error("Google API error: {}".format(r.text))
+
+    if result == "ja":
+        return True
+    elif result != "zh-TW":
+        # Use fanhuaji to convert to zh_TW
+        return _convert_to_zh_tw(texts)
+    return False
+
+
+def _ai_refusal_detected(texts, fallback_enabled: bool):
+    """Check if AI model refuses to translate the text"""
+    # Return if fallback is not enabled
+    if not fallback_enabled:
+        return False
+
+    flagged = False
+    openai_key = os.getenv("OPENAI_KEY", "")
+
+    if openai_key != "":
+        api_url = "https://api.openai.com/v1/moderations"
+        headers = {
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {openai_key}",
+        }
+        data = {"input": texts}
+        r = requests.post(api_url, headers=headers, json=data)
+        if r.status_code == 200:
+            try:
+                flagged = r.json().get("results", [{}])[0].get("flagged", False)
+            except Exception as e:
+                logger.error("API error: {}".format(repr(e)))
+                flagged = False
+        else:
+            flagged = False
+
+    if openai_key == "" or r.status_code != 200:
+        trans_text = google_trans(texts, to="en")
+        if "sentences" in trans_text:
+            trans_break = [i["trans"] for i in trans_text["sentences"]]
+            google_res = "".join(trans_break).lower().strip()
+            print(google_res)
+            if "translate" in google_res or "translation" in google_res:
+                flagged = True
+
+    return flagged
 
 
 def translate_movie_info(info: MovieInfo):
@@ -108,7 +216,16 @@ def translate(texts, engine: Union[
             err_msg = "{}: {}: Exception: {}".format(engine, -2, repr(e))
     elif engine.name == 'openai':
         try:
-            result = openai_translate(texts, engine.url, engine.api_key, engine.model)
+            result = openai_translate(
+                texts,
+                engine.url,
+                engine.api_key,
+                engine.model,
+                engine.temperature,
+                engine.max_tokens,
+                engine.fallback,
+                engine.to,
+            )
             if 'error_code' not in result:
                 rtn = {'trans': result}
             else:
@@ -131,6 +248,10 @@ def translate(texts, engine: Union[
             err_msg = "{}: {}: Exception: {}".format(engine, -2, repr(e))
     else:
         return {'trans': texts}
+
+    if err_msg != '':
+        rtn = {'error': err_msg}
+    return rtn
 
 def baidu_translate(texts, app_id, api_key, to='zh'):
     """使用百度翻译文本（默认翻译为简体中文）"""
@@ -190,7 +311,49 @@ def google_trans(texts, to='zh_CN'):
     time.sleep(4) # Google翻译的API有QPS限制，因此需要等待一段时间
     return result
 
-def claude_translate(texts, api_key, to="zh_CN"):
+
+def deepl_translate(texts, to="zh_CN"):
+    """使用DeepL翻译文本（默认翻译为简体中文）"""
+
+    deepl_key = os.getenv("DEEPL_KEY", None)
+
+    if not deepl_key:
+        raise Exception("$DEEPL_KEY is not set")
+
+    api_url = "https://api-free.deepl.com/v2/translate"
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": f"DeepL-Auth-Key {deepl_key}",
+    }
+    data = {
+        "text": [texts],
+        "target_lang": "ZH" if to == "zh_CN" else "ZH-HANT",
+        "split_sentences": "1",
+        "preserve_formatting": True,
+    }
+    r = requests.post(api_url, headers=headers, json=data)
+    if r.status_code == 200:
+        if "error" in r.json():
+            result = {
+                "error_code": r.status_code,
+                "error_msg": r.json().get("error", {}).get("message", r.reason),
+            }
+        else:
+            try:
+                response_message = r.json().get("translations")[0]
+                result = response_message.get("text", "").strip()
+            except Exception as e:
+                logger.error("DeepL API error: {}".format(repr(e)))
+                result = {"error_code": r.status_code, "error_msg": repr(e)}
+    else:
+        result = {
+            "error_code": r.status_code,
+            "error_msg": r.reason,
+        }
+    return result
+
+
+def claude_translate(texts, api_key: str, max_tokens: int, to="zh_CN"):
     """使用Claude翻译文本（默认翻译为简体中文）"""
     api_url = "https://api.anthropic.com/v1/messages"
     headers = {
@@ -200,8 +363,8 @@ def claude_translate(texts, api_key, to="zh_CN"):
     }
     data = {
         "model": "claude-3-haiku-20240307",
-        "system": f"Translate the following Japanese paragraph into {to}, while leaving non-Japanese text, names, or text that does not look like Japanese untranslated. Reply with the translated text only, do not add any text that is not in the original content.",
-        "max_tokens": 1024,
+        "system": _ai_translate_system_input(to),
+        "max_tokens": max_tokens,
         "messages": [{"role": "user", "content": texts}],
     }
     r = requests.post(api_url, headers=headers, json=data)
@@ -214,37 +377,48 @@ def claude_translate(texts, api_key, to="zh_CN"):
         }
     return result
 
-def openai_translate(texts, url: Url, api_key: str, model: str, to="zh_CN"):
+def openai_translate(texts, url: Url, api_key: str, model: str, temperature: float, max_tokens: int, fallback: bool, to="zh_CN"):
     """使用 OpenAI 翻译文本（默认翻译为简体中文）"""
+
+    # Check if input text is not Japanese
+    if not _text_language_detect_is_ja(texts):
+        # Do not translate
+        return texts
+
     api_url = str(url)
     headers = {
         "Content-Type": "application/json",
         "Authorization": f"Bearer {api_key}",
     }
     data = {
-         "messages": [
-           {
-             "role": "system",
-             "content": f"Translate the following Japanese paragraph into {to}, while leaving non-Japanese text, names, or text that does not look like Japanese untranslated. Reply with the translated text only, do not add any text that is not in the original content."
-           },
-           {
-             "role": "user",
-             "content": texts
-           }
-         ],
-         "model": model,
-         "temperature": 0,
-         "max_tokens": 1024,
+        "messages": [
+            {"role": "system", "content": _ai_translate_system_input(to)},
+            {"role": "user", "content": texts},
+        ],
+        "model": model,
+        "temperature": temperature,
+        "top_p": 1.0,
+        "frequency_penalty": 1,
+        "max_tokens": max_tokens,
     }
     r = requests.post(api_url, headers=headers, json=data)
     if r.status_code == 200:
         if 'error' in r.json():
             result = {
                 "error_code": r.status_code,
-                "error_msg": r.json().get("error", {}).get("message", ""),
+                "error_msg": r.json().get("error", {}).get("message", r.reason),
             }
         else:
-            result = r.json().get("choices", [{}])[0].get("message", {}).get("content", "").strip()
+            try:
+                response_message = r.json().get("choices", [{}])[0].get("message", {})
+                result = response_message.get("content", "").strip()
+            except Exception as e:
+                logger.error("Open API error: {}".format(repr(e)))
+                result = {"error_code": r.status_code, "error_msg": repr(e)}
+            if _ai_refusal_detected(result, fallback):
+                logger.warning("OpenAI refused to translate the text, fallback to DeepL")
+                result = deepl_translate(texts, to)
+        logger.info("OpenAI Output: %s", result)
     else:
         result = {
             "error_code": r.status_code,

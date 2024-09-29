@@ -188,6 +188,10 @@ class OpenAITranslateEngine(BaseConfig):
     url: Url
     api_key: str
     model: str
+    temperature: float
+    max_tokens: int
+    fallback: bool
+    to: str
 
 class GoogleTranslateEngine(BaseConfig):
     name: Literal['google']
