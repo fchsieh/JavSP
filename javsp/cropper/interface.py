@@ -19,6 +19,5 @@ class DefaultCropper(Cropper):
             if fanart_h / fanart_w < ratio \
             else (fanart_w, int(fanart_w * ratio)) # 图片太“瘦”时以宽度来定裁剪高度
 
-        box = (poster_w - fanart_w, 0, poster_w, poster_h)
-        fanart.crop(box)
-        return fanart
+        box = (fanart_w - poster_w, 0, fanart_w, poster_h)
+        return fanart.crop(box)
