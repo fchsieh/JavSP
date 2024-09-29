@@ -122,7 +122,6 @@ def _ai_refusal_detected(texts, fallback_enabled: bool):
         if "sentences" in trans_text:
             trans_break = [i["trans"] for i in trans_text["sentences"]]
             google_res = "".join(trans_break).lower().strip()
-            print(google_res)
             if "translate" in google_res or "translation" in google_res:
                 flagged = True
 
